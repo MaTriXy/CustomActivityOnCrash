@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Eduard Ereza Martínez
+ * Copyright 2014-2017 Eduard Ereza Martínez
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,26 +14,28 @@
  * limitations under the License.
  */
 
-package cat.ereza.sample.customactivityoncrash.activity;
+package cat.ereza.customactivityoncrash.sample.activity;
 
-import android.app.Activity;
+import android.annotation.SuppressLint;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.support.annotation.Nullable;
+import android.support.v7.app.AppCompatActivity;
 import android.view.View;
 import android.widget.Button;
 
-import cat.ereza.sample.customactivityoncrash.R;
+import cat.ereza.customactivityoncrash.sample.R;
 
-public class MainActivity extends Activity {
+public class MainActivity extends AppCompatActivity {
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        Button crashMainThreadButton = (Button) findViewById(R.id.button_crash_main_thread);
-        Button crashBgThreadButton = (Button) findViewById(R.id.button_crash_bg_thread);
-        Button crashWithDelayButton = (Button) findViewById(R.id.button_crash_with_delay);
+        Button crashMainThreadButton = findViewById(R.id.button_crash_main_thread);
+        Button crashBgThreadButton = findViewById(R.id.button_crash_bg_thread);
+        Button crashWithDelayButton = findViewById(R.id.button_crash_with_delay);
 
         crashMainThreadButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -43,6 +45,7 @@ public class MainActivity extends Activity {
         });
 
         crashBgThreadButton.setOnClickListener(new View.OnClickListener() {
+            @SuppressLint("StaticFieldLeak") //For demo purposes we don't care about leaks
             @Override
             public void onClick(View view) {
                 new AsyncTask<Void, Void, Void>() {
@@ -55,6 +58,7 @@ public class MainActivity extends Activity {
         });
 
         crashWithDelayButton.setOnClickListener(new View.OnClickListener() {
+            @SuppressLint("StaticFieldLeak") //For demo purposes we don't care about leaks
             @Override
             public void onClick(View view) {
                 new AsyncTask<Void, Void, Void>() {

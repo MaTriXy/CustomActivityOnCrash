@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Eduard Ereza Martínez
+ * Copyright 2014-2017 Eduard Ereza Martínez
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,34 +27,36 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.Build;
 import android.os.Bundle;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
+import android.support.annotation.RestrictTo;
 import android.util.Log;
 
 import java.io.PrintWriter;
 import java.io.Serializable;
 import java.io.StringWriter;
 import java.lang.ref.WeakReference;
-import java.lang.reflect.Modifier;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.Date;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 import cat.ereza.customactivityoncrash.activity.DefaultErrorActivity;
+import cat.ereza.customactivityoncrash.config.CaocConfig;
 
-@SuppressLint("NewApi")
 public final class CustomActivityOnCrash {
 
     private final static String TAG = "CustomActivityOnCrash";
 
     //Extras passed to the error activity
-    private static final String EXTRA_RESTART_ACTIVITY_CLASS = "cat.ereza.customactivityoncrash.EXTRA_RESTART_ACTIVITY_CLASS";
-    private static final String EXTRA_SHOW_ERROR_DETAILS = "cat.ereza.customactivityoncrash.EXTRA_SHOW_ERROR_DETAILS";
+    private static final String EXTRA_CONFIG = "cat.ereza.customactivityoncrash.EXTRA_CONFIG";
     private static final String EXTRA_STACK_TRACE = "cat.ereza.customactivityoncrash.EXTRA_STACK_TRACE";
-    private static final String EXTRA_IMAGE_DRAWABLE_ID = "cat.ereza.customactivityoncrash.EXTRA_IMAGE_DRAWABLE_ID";
-    private static final String EXTRA_EVENT_LISTENER = "cat.ereza.customactivityoncrash.EXTRA_EVENT_LISTENER";
+    private static final String EXTRA_ACTIVITY_LOG = "cat.ereza.customactivityoncrash.EXTRA_ACTIVITY_LOG";
 
     //General constants
     private static final String INTENT_ACTION_ERROR_ACTIVITY = "cat.ereza.customactivityoncrash.ERROR";
@@ -62,48 +64,40 @@ public final class CustomActivityOnCrash {
     private static final String CAOC_HANDLER_PACKAGE_NAME = "cat.ereza.customactivityoncrash";
     private static final String DEFAULT_HANDLER_PACKAGE_NAME = "com.android.internal.os";
     private static final int MAX_STACK_TRACE_SIZE = 131071; //128 KB - 1
-    private static final int TIMESTAMP_DIFFERENCE_TO_AVOID_RESTART_LOOPS_IN_MILLIS = 2000;
+    private static final int MAX_ACTIVITIES_IN_LOG = 50;
 
     //Shared preferences
     private static final String SHARED_PREFERENCES_FILE = "custom_activity_on_crash";
     private static final String SHARED_PREFERENCES_FIELD_TIMESTAMP = "last_crash_timestamp";
 
     //Internal variables
+    @SuppressLint("StaticFieldLeak") //This is an application-wide component
     private static Application application;
+    private static CaocConfig config = new CaocConfig();
+    private static final Deque<String> activityLog = new ArrayDeque<>(MAX_ACTIVITIES_IN_LOG);
     private static WeakReference<Activity> lastActivityCreated = new WeakReference<>(null);
-    private static boolean isInBackground = false;
+    private static boolean isInBackground = true;
 
-    //Settable properties and their defaults
-    private static boolean launchErrorActivityWhenInBackground = true;
-    private static boolean showErrorDetails = true;
-    private static boolean enableAppRestart = true;
-    private static int defaultErrorActivityDrawableId = R.drawable.customactivityoncrash_error_image;
-    private static Class<? extends Activity> errorActivityClass = null;
-    private static Class<? extends Activity> restartActivityClass = null;
-    private static EventListener eventListener = null;
 
     /**
      * Installs CustomActivityOnCrash on the application using the default error activity.
      *
      * @param context Context to use for obtaining the ApplicationContext. Must not be null.
      */
-    public static void install(Context context) {
+    @RestrictTo(RestrictTo.Scope.LIBRARY)
+    public static void install(@Nullable final Context context) {
         try {
             if (context == null) {
                 Log.e(TAG, "Install failed: context is null!");
             } else {
-                if (android.os.Build.VERSION.SDK_INT < Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
-                    Log.w(TAG, "CustomActivityOnCrash will be installed, but may not be reliable in API lower than 14");
-                }
-
                 //INSTALL!
                 final Thread.UncaughtExceptionHandler oldHandler = Thread.getDefaultUncaughtExceptionHandler();
 
                 if (oldHandler != null && oldHandler.getClass().getName().startsWith(CAOC_HANDLER_PACKAGE_NAME)) {
-                    Log.e(TAG, "You have already installed CustomActivityOnCrash, doing nothing!");
+                    Log.e(TAG, "CustomActivityOnCrash was already installed, doing nothing!");
                 } else {
                     if (oldHandler != null && !oldHandler.getClass().getName().startsWith(DEFAULT_HANDLER_PACKAGE_NAME)) {
-                        Log.e(TAG, "IMPORTANT WARNING! You already have an UncaughtExceptionHandler, are you sure this is correct? If you use ACRA, Crashlytics or similar libraries, you must initialize them AFTER CustomActivityOnCrash! Installing anyway, but your original handler will not be called.");
+                        Log.e(TAG, "IMPORTANT WARNING! You already have an UncaughtExceptionHandler, are you sure this is correct? If you use a custom UncaughtExceptionHandler, you must initialize it AFTER CustomActivityOnCrash! Installing anyway, but your original handler will not be called.");
                     }
 
                     application = (Application) context.getApplicationContext();
@@ -112,153 +106,155 @@ public final class CustomActivityOnCrash {
                     Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
                         @Override
                         public void uncaughtException(Thread thread, final Throwable throwable) {
-                            Log.e(TAG, "App has crashed, executing CustomActivityOnCrash's UncaughtExceptionHandler", throwable);
+                            if (config.isEnabled()) {
+                                Log.e(TAG, "App has crashed, executing CustomActivityOnCrash's UncaughtExceptionHandler", throwable);
 
-                            if (hasCrashedInTheLastSeconds(application)) {
-                                Log.e(TAG, "App already crashed in the last 2 seconds, not starting custom error activity because we could enter a restart loop. Are you sure that your app does not crash directly on init?", throwable);
-                                if (oldHandler != null) {
-                                    oldHandler.uncaughtException(thread, throwable);
-                                    return;
-                                }
-                            } else {
-                                setLastCrashTimestamp(application, new Date().getTime());
-
-                                if (errorActivityClass == null) {
-                                    errorActivityClass = guessErrorActivityClass(application);
-                                }
-
-                                if (isStackTraceLikelyConflictive(throwable, errorActivityClass)) {
-                                    Log.e(TAG, "Your application class or your error activity have crashed, the custom activity will not be launched!");
+                                if (hasCrashedInTheLastSeconds(application)) {
+                                    Log.e(TAG, "App already crashed recently, not starting custom error activity because we could enter a restart loop. Are you sure that your app does not crash directly on init?", throwable);
                                     if (oldHandler != null) {
                                         oldHandler.uncaughtException(thread, throwable);
                                         return;
                                     }
-                                } else if (launchErrorActivityWhenInBackground || !isInBackground) {
+                                } else {
+                                    setLastCrashTimestamp(application, new Date().getTime());
 
-                                    final Intent intent = new Intent(application, errorActivityClass);
-                                    StringWriter sw = new StringWriter();
-                                    PrintWriter pw = new PrintWriter(sw);
-                                    throwable.printStackTrace(pw);
-                                    String stackTraceString = sw.toString();
+                                    Class<? extends Activity> errorActivityClass = config.getErrorActivityClass();
 
-                                    //Reduce data to 128KB so we don't get a TransactionTooLargeException when sending the intent.
-                                    //The limit is 1MB on Android but some devices seem to have it lower.
-                                    //See: http://developer.android.com/reference/android/os/TransactionTooLargeException.html
-                                    //And: http://stackoverflow.com/questions/11451393/what-to-do-on-transactiontoolargeexception#comment46697371_12809171
-                                    if (stackTraceString.length() > MAX_STACK_TRACE_SIZE) {
-                                        String disclaimer = " [stack trace too large]";
-                                        stackTraceString = stackTraceString.substring(0, MAX_STACK_TRACE_SIZE - disclaimer.length()) + disclaimer;
+                                    if (errorActivityClass == null) {
+                                        errorActivityClass = guessErrorActivityClass(application);
                                     }
 
-                                    if (enableAppRestart && restartActivityClass == null) {
-                                        //We can set the restartActivityClass because the app will terminate right now,
-                                        //and when relaunched, will be null again by default.
-                                        restartActivityClass = guessRestartActivityClass(application);
-                                    } else if (!enableAppRestart) {
-                                        //In case someone sets the activity and then decides to not restart
-                                        restartActivityClass = null;
-                                    }
+                                    if (isStackTraceLikelyConflictive(throwable, errorActivityClass)) {
+                                        Log.e(TAG, "Your application class or your error activity have crashed, the custom activity will not be launched!");
+                                        if (oldHandler != null) {
+                                            oldHandler.uncaughtException(thread, throwable);
+                                            return;
+                                        }
+                                    } else if (config.getBackgroundMode() == CaocConfig.BACKGROUND_MODE_SHOW_CUSTOM || !isInBackground) {
 
-                                    intent.putExtra(EXTRA_STACK_TRACE, stackTraceString);
-                                    intent.putExtra(EXTRA_RESTART_ACTIVITY_CLASS, restartActivityClass);
-                                    intent.putExtra(EXTRA_SHOW_ERROR_DETAILS, showErrorDetails);
-                                    intent.putExtra(EXTRA_EVENT_LISTENER, eventListener);
-                                    intent.putExtra(EXTRA_IMAGE_DRAWABLE_ID, defaultErrorActivityDrawableId);
-                                    intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                                    if (eventListener != null) {
-                                        eventListener.onLaunchErrorActivity();
+                                        final Intent intent = new Intent(application, errorActivityClass);
+                                        StringWriter sw = new StringWriter();
+                                        PrintWriter pw = new PrintWriter(sw);
+                                        throwable.printStackTrace(pw);
+                                        String stackTraceString = sw.toString();
+
+                                        //Reduce data to 128KB so we don't get a TransactionTooLargeException when sending the intent.
+                                        //The limit is 1MB on Android but some devices seem to have it lower.
+                                        //See: http://developer.android.com/reference/android/os/TransactionTooLargeException.html
+                                        //And: http://stackoverflow.com/questions/11451393/what-to-do-on-transactiontoolargeexception#comment46697371_12809171
+                                        if (stackTraceString.length() > MAX_STACK_TRACE_SIZE) {
+                                            String disclaimer = " [stack trace too large]";
+                                            stackTraceString = stackTraceString.substring(0, MAX_STACK_TRACE_SIZE - disclaimer.length()) + disclaimer;
+                                        }
+                                        intent.putExtra(EXTRA_STACK_TRACE, stackTraceString);
+
+                                        if (config.isTrackActivities()) {
+                                            StringBuilder activityLogStringBuilder = new StringBuilder();
+                                            while (!activityLog.isEmpty()) {
+                                                activityLogStringBuilder.append(activityLog.poll());
+                                            }
+                                            intent.putExtra(EXTRA_ACTIVITY_LOG, activityLogStringBuilder.toString());
+                                        }
+
+                                        if (config.isShowRestartButton() && config.getRestartActivityClass() == null) {
+                                            //We can set the restartActivityClass because the app will terminate right now,
+                                            //and when relaunched, will be null again by default.
+                                            config.setRestartActivityClass(guessRestartActivityClass(application));
+                                        }
+
+                                        intent.putExtra(EXTRA_CONFIG, config);
+                                        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                                        if (config.getEventListener() != null) {
+                                            config.getEventListener().onLaunchErrorActivity();
+                                        }
+                                        application.startActivity(intent);
+                                    } else if (config.getBackgroundMode() == CaocConfig.BACKGROUND_MODE_CRASH) {
+                                        if (oldHandler != null) {
+                                            oldHandler.uncaughtException(thread, throwable);
+                                            return;
+                                        }
+                                        //If it is null (should not be), we let it continue and kill the process or it will be stuck
                                     }
-                                    application.startActivity(intent);
+                                    //Else (BACKGROUND_MODE_SILENT): do nothing and let the following code kill the process
                                 }
+                                final Activity lastActivity = lastActivityCreated.get();
+                                if (lastActivity != null) {
+                                    //We finish the activity, this solves a bug which causes infinite recursion.
+                                    //See: https://github.com/ACRA/acra/issues/42
+                                    lastActivity.finish();
+                                    lastActivityCreated.clear();
+                                }
+                                killCurrentProcess();
+                            } else if (oldHandler != null) {
+                                oldHandler.uncaughtException(thread, throwable);
                             }
-                            final Activity lastActivity = lastActivityCreated.get();
-                            if (lastActivity != null) {
-                                //We finish the activity, this solves a bug which causes infinite recursion.
-                                //This is unsolvable in API<14, so beware!
-                                //See: https://github.com/ACRA/acra/issues/42
-                                lastActivity.finish();
-                                lastActivityCreated.clear();
-                            }
-                            killCurrentProcess();
                         }
                     });
-                    if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
-                        application.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
-                            int currentlyStartedActivities = 0;
+                    application.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+                        int currentlyStartedActivities = 0;
+                        final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
 
-                            @Override
-                            public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
-                                if (activity.getClass() != errorActivityClass) {
-                                    // Copied from ACRA:
-                                    // Ignore activityClass because we want the last
-                                    // application Activity that was started so that we can
-                                    // explicitly kill it off.
-                                    lastActivityCreated = new WeakReference<>(activity);
-                                }
+                        @Override
+                        public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
+                            if (activity.getClass() != config.getErrorActivityClass()) {
+                                // Copied from ACRA:
+                                // Ignore activityClass because we want the last
+                                // application Activity that was started so that we can
+                                // explicitly kill it off.
+                                lastActivityCreated = new WeakReference<>(activity);
                             }
-
-                            @Override
-                            public void onActivityStarted(Activity activity) {
-                                currentlyStartedActivities++;
-                                isInBackground = (currentlyStartedActivities == 0);
-                                //Do nothing
+                            if (config.isTrackActivities()) {
+                                activityLog.add(dateFormat.format(new Date()) + ": " + activity.getClass().getSimpleName() + " created\n");
                             }
+                        }
 
-                            @Override
-                            public void onActivityResumed(Activity activity) {
-                                //Do nothing
+                        @Override
+                        public void onActivityStarted(Activity activity) {
+                            currentlyStartedActivities++;
+                            isInBackground = (currentlyStartedActivities == 0);
+                            //Do nothing
+                        }
+
+                        @Override
+                        public void onActivityResumed(Activity activity) {
+                            if (config.isTrackActivities()) {
+                                activityLog.add(dateFormat.format(new Date()) + ": " + activity.getClass().getSimpleName() + " resumed\n");
                             }
+                        }
 
-                            @Override
-                            public void onActivityPaused(Activity activity) {
-                                //Do nothing
+                        @Override
+                        public void onActivityPaused(Activity activity) {
+                            if (config.isTrackActivities()) {
+                                activityLog.add(dateFormat.format(new Date()) + ": " + activity.getClass().getSimpleName() + " paused\n");
                             }
+                        }
 
-                            @Override
-                            public void onActivityStopped(Activity activity) {
-                                //Do nothing
-                                currentlyStartedActivities--;
-                                isInBackground = (currentlyStartedActivities == 0);
+                        @Override
+                        public void onActivityStopped(Activity activity) {
+                            //Do nothing
+                            currentlyStartedActivities--;
+                            isInBackground = (currentlyStartedActivities == 0);
+                        }
+
+                        @Override
+                        public void onActivitySaveInstanceState(Activity activity, Bundle outState) {
+                            //Do nothing
+                        }
+
+                        @Override
+                        public void onActivityDestroyed(Activity activity) {
+                            if (config.isTrackActivities()) {
+                                activityLog.add(dateFormat.format(new Date()) + ": " + activity.getClass().getSimpleName() + " destroyed\n");
                             }
-
-                            @Override
-                            public void onActivitySaveInstanceState(Activity activity, Bundle outState) {
-                                //Do nothing
-                            }
-
-                            @Override
-                            public void onActivityDestroyed(Activity activity) {
-                                //Do nothing
-                            }
-                        });
-                    }
-
-                    Log.i(TAG, "CustomActivityOnCrash has been installed.");
+                        }
+                    });
                 }
+
+                Log.i(TAG, "CustomActivityOnCrash has been installed.");
             }
         } catch (Throwable t) {
             Log.e(TAG, "An unknown error occurred while installing CustomActivityOnCrash, it may not have been properly initialized. Please report this as a bug if needed.", t);
         }
-    }
-
-    /**
-     * Given an Intent, returns if the error details button should be displayed.
-     *
-     * @param intent The Intent. Must not be null.
-     * @return true if the button must be shown, false otherwise.
-     */
-    public static boolean isShowErrorDetailsFromIntent(Intent intent) {
-        return intent.getBooleanExtra(CustomActivityOnCrash.EXTRA_SHOW_ERROR_DETAILS, true);
-    }
-
-    /**
-     * Given an Intent, returns the drawable id of the image to show on the default error activity.
-     *
-     * @param intent The Intent. Must not be null.
-     * @return The id of the drawable to use.
-     */
-    public static int getDefaultErrorActivityDrawableIdFromIntent(Intent intent) {
-        return intent.getIntExtra(CustomActivityOnCrash.EXTRA_IMAGE_DRAWABLE_ID, R.drawable.customactivityoncrash_error_image);
     }
 
     /**
@@ -267,8 +263,39 @@ public final class CustomActivityOnCrash {
      * @param intent The Intent. Must not be null.
      * @return The stacktrace, or null if not provided.
      */
-    public static String getStackTraceFromIntent(Intent intent) {
+    @Nullable
+    public static String getStackTraceFromIntent(@NonNull Intent intent) {
         return intent.getStringExtra(CustomActivityOnCrash.EXTRA_STACK_TRACE);
+    }
+
+    /**
+     * Given an Intent, returns the config extra from it.
+     *
+     * @param intent The Intent. Must not be null.
+     * @return The config, or null if not provided.
+     */
+    @Nullable
+    public static CaocConfig getConfigFromIntent(@NonNull Intent intent) {
+        CaocConfig config = (CaocConfig) intent.getSerializableExtra(CustomActivityOnCrash.EXTRA_CONFIG);
+        if (config.isLogErrorOnRestart()) {
+            String stackTrace = getStackTraceFromIntent(intent);
+            if (stackTrace != null) {
+                Log.e(TAG, "The previous app process crashed. This is the stack trace of the crash:\n" + getStackTraceFromIntent(intent));
+            }
+        }
+
+        return config;
+    }
+
+    /**
+     * Given an Intent, returns the activity log extra from it.
+     *
+     * @param intent The Intent. Must not be null.
+     * @return The activity log, or null if not provided.
+     */
+    @Nullable
+    public static String getActivityLogFromIntent(@NonNull Intent intent) {
+        return intent.getStringExtra(CustomActivityOnCrash.EXTRA_ACTIVITY_LOG);
     }
 
     /**
@@ -278,7 +305,8 @@ public final class CustomActivityOnCrash {
      * @param intent  The Intent. Must not be null.
      * @return The full error details.
      */
-    public static String getAllErrorDetailsFromIntent(Context context, Intent intent) {
+    @NonNull
+    public static String getAllErrorDetailsFromIntent(@NonNull Context context, @NonNull Intent intent) {
         //I don't think that this needs localization because it's a development string...
 
         Date currentDate = new Date();
@@ -293,7 +321,9 @@ public final class CustomActivityOnCrash {
         String errorDetails = "";
 
         errorDetails += "Build version: " + versionName + " \n";
-        errorDetails += "Build date: " + buildDateAsString + " \n";
+        if (buildDateAsString != null) {
+            errorDetails += "Build date: " + buildDateAsString + " \n";
+        }
         errorDetails += "Current date: " + dateFormat.format(currentDate) + " \n";
         //Added a space between line feeds to fix #18.
         //Ideally, we should not use this method at all... It is only formatted this way because of coupling with the default error activity.
@@ -301,57 +331,14 @@ public final class CustomActivityOnCrash {
         errorDetails += "Device: " + getDeviceModelName() + " \n \n";
         errorDetails += "Stack trace:  \n";
         errorDetails += getStackTraceFromIntent(intent);
+
+        String activityLog = getActivityLogFromIntent(intent);
+
+        if (activityLog != null) {
+            errorDetails += "\nUser actions: \n";
+            errorDetails += activityLog;
+        }
         return errorDetails;
-    }
-
-    /**
-     * Given an Intent, returns the restart activity class extra from it.
-     *
-     * @param intent The Intent. Must not be null.
-     * @return The restart activity class, or null if not provided.
-     */
-    @SuppressWarnings("unchecked")
-    public static Class<? extends Activity> getRestartActivityClassFromIntent(Intent intent) {
-        Serializable serializedClass = intent.getSerializableExtra(CustomActivityOnCrash.EXTRA_RESTART_ACTIVITY_CLASS);
-
-        if (serializedClass != null && serializedClass instanceof Class) {
-            return (Class<? extends Activity>) serializedClass;
-        } else {
-            return null;
-        }
-    }
-
-    /**
-     * Given an Intent, returns the event listener extra from it.
-     *
-     * @param intent The Intent. Must not be null.
-     * @return The event listener, or null if not provided.
-     */
-    @SuppressWarnings("unchecked")
-    public static EventListener getEventListenerFromIntent(Intent intent) {
-        Serializable serializedClass = intent.getSerializableExtra(CustomActivityOnCrash.EXTRA_EVENT_LISTENER);
-
-        if (serializedClass != null && serializedClass instanceof EventListener) {
-            return (EventListener) serializedClass;
-        } else {
-            return null;
-        }
-    }
-
-    /**
-     * Given an Intent, restarts the app and launches a startActivity to that intent.
-     * The flags NEW_TASK and CLEAR_TASK are set if the Intent does not have them, to ensure
-     * the app stack is fully cleared.
-     * Must only be used from your error activity.
-     *
-     * @param activity The current error activity. Must not be null.
-     * @param intent   The Intent. Must not be null.
-     * @deprecated You should use restartApplicationWithIntent(activity, intent, eventListener).
-     * If you don't want to use an eventListener, just pass null.
-     */
-    @Deprecated
-    public static void restartApplicationWithIntent(Activity activity, Intent intent) {
-        restartApplicationWithIntent(activity, intent, null);
     }
 
     /**
@@ -361,30 +348,32 @@ public final class CustomActivityOnCrash {
      * If an event listener is provided, the restart app event is invoked.
      * Must only be used from your error activity.
      *
-     * @param activity      The current error activity. Must not be null.
-     * @param intent        The Intent. Must not be null.
-     * @param eventListener The event listener as obtained by calling getEventListenerFromIntent.
+     * @param activity The current error activity. Must not be null.
+     * @param intent   The Intent. Must not be null.
+     * @param config   The config object as obtained by calling getConfigFromIntent.
      */
-    public static void restartApplicationWithIntent(Activity activity, Intent intent, EventListener eventListener) {
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        if (eventListener != null) {
-            eventListener.onRestartAppFromErrorActivity();
+    public static void restartApplicationWithIntent(@NonNull Activity activity, @NonNull Intent intent, @NonNull CaocConfig config) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        if (intent.getComponent() != null) {
+            //If the class name has been set, we force it to simulate a Launcher launch.
+            //If we don't do this, if you restart from the error activity, then press home,
+            //and then launch the activity from the launcher, the main activity appears twice on the backstack.
+            //This will most likely not have any detrimental effect because if you set the Intent component,
+            //if will always be launched regardless of the actions specified here.
+            intent.setAction(Intent.ACTION_MAIN);
+            intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        }
+        if (config.getEventListener() != null) {
+            config.getEventListener().onRestartAppFromErrorActivity();
         }
         activity.finish();
         activity.startActivity(intent);
         killCurrentProcess();
     }
 
-    /**
-     * Closes the app. Must only be used from your error activity.
-     *
-     * @param activity The current error activity. Must not be null.
-     * @deprecated You should use closeApplication(activity, eventListener).
-     * If you don't want to use an eventListener, just pass null.
-     */
-    @Deprecated
-    public static void closeApplication(Activity activity) {
-        closeApplication(activity, null);
+    public static void restartApplication(@NonNull Activity activity, @NonNull CaocConfig config) {
+        Intent intent = new Intent(activity, config.getRestartActivityClass());
+        restartApplicationWithIntent(activity, intent, config);
     }
 
     /**
@@ -392,162 +381,41 @@ public final class CustomActivityOnCrash {
      * If an event listener is provided, the close app event is invoked.
      * Must only be used from your error activity.
      *
-     * @param activity      The current error activity. Must not be null.
-     * @param eventListener The event listener as obtained by calling getEventListenerFromIntent.
+     * @param activity The current error activity. Must not be null.
+     * @param config   The config object as obtained by calling getConfigFromIntent.
      */
-    public static void closeApplication(Activity activity, EventListener eventListener) {
-        if (eventListener != null) {
-            eventListener.onCloseAppFromErrorActivity();
+    public static void closeApplication(@NonNull Activity activity, @NonNull CaocConfig config) {
+        if (config.getEventListener() != null) {
+            config.getEventListener().onCloseAppFromErrorActivity();
         }
         activity.finish();
         killCurrentProcess();
     }
 
-
-    /// SETTERS AND GETTERS FOR THE CUSTOMIZABLE PROPERTIES
-
-    /**
-     * Returns if the error activity must be launched when the app is on background.
-     *
-     * @return true if it will be launched, false otherwise.
-     */
-    public static boolean isLaunchErrorActivityWhenInBackground() {
-        return launchErrorActivityWhenInBackground;
-    }
-
-    /**
-     * Defines if the error activity must be launched when the app is on background.
-     * Set it to true if you want to launch the error activity when the app is in background,
-     * false if you want it not to launch and crash silently.
-     * This has no effect in API<14 and the error activity is always launched.
-     * The default is true (the app will be brought to front when a crash occurs).
-     */
-    public static void setLaunchErrorActivityWhenInBackground(boolean launchErrorActivityWhenInBackground) {
-        CustomActivityOnCrash.launchErrorActivityWhenInBackground = launchErrorActivityWhenInBackground;
-    }
-
-    /**
-     * Returns if the error activity will show the error details button.
-     *
-     * @return true if it will be shown, false otherwise.
-     */
-    public static boolean isShowErrorDetails() {
-        return showErrorDetails;
-    }
-
-    /**
-     * Defines if the error activity must shown the error details button.
-     * Set it to true if you want to show the full stack trace and device info,
-     * false if you want it to be hidden.
-     * The default is true.
-     */
-    public static void setShowErrorDetails(boolean showErrorDetails) {
-        CustomActivityOnCrash.showErrorDetails = showErrorDetails;
-    }
-
-    /**
-     * Returns the default error activity drawable identifier.
-     *
-     * @return the default error activity drawable identifier
-     */
-    public static int getDefaultErrorActivityDrawable() {
-        return defaultErrorActivityDrawableId;
-    }
-
-    /**
-     * Defines which drawable to use in the default error activity image.
-     * Set this if you want to use an image other than the default one.
-     * The default is R.drawable.customactivityoncrash_error_image (a cute upside-down bug).
-     */
-    public static void setDefaultErrorActivityDrawable(int defaultErrorActivityDrawableId) {
-        CustomActivityOnCrash.defaultErrorActivityDrawableId = defaultErrorActivityDrawableId;
-    }
-
-    /**
-     * Returns if the error activity should show a restart button.
-     * Note that even if restart is enabled, a valid restart activity could not be found.
-     * In that case, a close button will still be used.
-     *
-     * @return true if a restart button should be shown, false if a close button must be used.
-     */
-    public static boolean isEnableAppRestart() {
-        return enableAppRestart;
-    }
-
-    /**
-     * Defines if the error activity should show a restart button.
-     * Set it to true if you want to show a restart button,
-     * false if you want to show a close button.
-     * Note that even if restart is enabled, a valid restart activity could not be found.
-     * In that case, a close button will still be used.
-     * The default is true.
-     */
-    public static void setEnableAppRestart(boolean enableAppRestart) {
-        CustomActivityOnCrash.enableAppRestart = enableAppRestart;
-    }
-
-    /**
-     * Returns the error activity class to launch when a crash occurs.
-     *
-     * @return The class, or null if not set.
-     */
-    public static Class<? extends Activity> getErrorActivityClass() {
-        return errorActivityClass;
-    }
-
-    /**
-     * Sets the error activity class to launch when a crash occurs.
-     * If null,the default error activity will be used.
-     */
-    public static void setErrorActivityClass(Class<? extends Activity> errorActivityClass) {
-        CustomActivityOnCrash.errorActivityClass = errorActivityClass;
-    }
-
-    /**
-     * Returns the main activity class that the error activity must launch when a crash occurs.
-     *
-     * @return The class, or null if not set.
-     */
-    public static Class<? extends Activity> getRestartActivityClass() {
-        return restartActivityClass;
-    }
-
-    /**
-     * Sets the main activity class that the error activity must launch when a crash occurs.
-     * If not set or set to null, the default error activity will close instead.
-     */
-    public static void setRestartActivityClass(Class<? extends Activity> restartActivityClass) {
-        CustomActivityOnCrash.restartActivityClass = restartActivityClass;
-    }
-
-    /**
-     * Returns the event listener to be called when events occur, so they can be reported
-     * by the app as, for example, Google Analytics events.
-     *
-     * @return The event listener, or null if not set.
-     */
-    public static EventListener getEventListener() {
-        return eventListener;
-    }
-
-    /**
-     * Sets an event listener to be called when events occur, so they can be reported
-     * by the app as, for example, Google Analytics events.
-     * If not set or set to null, no events will be reported.
-     *
-     * @param eventListener The event listener.
-     * @throws IllegalArgumentException if the eventListener is an inner or anonymous class
-     */
-    public static void setEventListener(EventListener eventListener) {
-        if (eventListener != null && eventListener.getClass().getEnclosingClass() != null && !Modifier.isStatic(eventListener.getClass().getModifiers())) {
-            throw new IllegalArgumentException("The event listener cannot be an inner or anonymous class, because it will need to be serialized. Change it to a class of its own, or make it a static inner class.");
-        } else {
-            CustomActivityOnCrash.eventListener = eventListener;
-        }
-    }
-
-
     /// INTERNAL METHODS NOT TO BE USED BY THIRD PARTIES
+
+    /**
+     * INTERNAL method that returns the current configuration of the library.
+     * If you want to check the config, use CaocConfig.Builder.get();
+     *
+     * @return the current configuration
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY)
+    @NonNull
+    public static CaocConfig getConfig() {
+        return config;
+    }
+
+    /**
+     * INTERNAL method that sets the configuration of the library.
+     * You must not use this, use CaocConfig.Builder.apply()
+     *
+     * @param config the configuration to use
+     */
+    @RestrictTo(RestrictTo.Scope.LIBRARY)
+    public static void setConfig(@NonNull CaocConfig config) {
+        CustomActivityOnCrash.config = config;
+    }
 
     /**
      * INTERNAL method that checks if the stack trace that just crashed is conflictive. This is true in the following scenarios:
@@ -558,7 +426,7 @@ public final class CustomActivityOnCrash {
      * @param activityClass The activity class to launch when the app crashes
      * @return true if this stack trace is conflictive and the activity must not be launched, false otherwise
      */
-    private static boolean isStackTraceLikelyConflictive(Throwable throwable, Class<? extends Activity> activityClass) {
+    private static boolean isStackTraceLikelyConflictive(@NonNull Throwable throwable, @NonNull Class<? extends Activity> activityClass) {
         do {
             StackTraceElement[] stackTrace = throwable.getStackTrace();
             for (StackTraceElement element : stackTrace) {
@@ -577,19 +445,28 @@ public final class CustomActivityOnCrash {
      * @param dateFormat DateFormat to use to convert from Date to String
      * @return The formatted date, or "Unknown" if unable to determine it.
      */
-    private static String getBuildDateAsString(Context context, DateFormat dateFormat) {
-        String buildDate;
+    @Nullable
+    private static String getBuildDateAsString(@NonNull Context context, @NonNull DateFormat dateFormat) {
+        long buildDate;
         try {
             ApplicationInfo ai = context.getPackageManager().getApplicationInfo(context.getPackageName(), 0);
             ZipFile zf = new ZipFile(ai.sourceDir);
+
+            //If this failed, try with the old zip method
             ZipEntry ze = zf.getEntry("classes.dex");
-            long time = ze.getTime();
-            buildDate = dateFormat.format(new Date(time));
+            buildDate = ze.getTime();
+
+
             zf.close();
         } catch (Exception e) {
-            buildDate = "Unknown";
+            buildDate = 0;
         }
-        return buildDate;
+
+        if (buildDate > 312764400000L) {
+            return dateFormat.format(new Date(buildDate));
+        } else {
+            return null;
+        }
     }
 
     /**
@@ -598,6 +475,7 @@ public final class CustomActivityOnCrash {
      * @param context A valid context. Must not be null.
      * @return The version name, or "Unknown if unable to determine it.
      */
+    @NonNull
     private static String getVersionName(Context context) {
         try {
             PackageInfo packageInfo = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
@@ -613,6 +491,7 @@ public final class CustomActivityOnCrash {
      *
      * @return The device model name (i.e., "LGE Nexus 5")
      */
+    @NonNull
     private static String getDeviceModelName() {
         String manufacturer = Build.MANUFACTURER;
         String model = Build.MODEL;
@@ -629,7 +508,8 @@ public final class CustomActivityOnCrash {
      * @param s The string to capitalize
      * @return The capitalized string
      */
-    private static String capitalize(String s) {
+    @NonNull
+    private static String capitalize(@Nullable String s) {
         if (s == null || s.length() == 0) {
             return "";
         }
@@ -650,7 +530,8 @@ public final class CustomActivityOnCrash {
      * @param context A valid context. Must not be null.
      * @return The guessed restart activity class, or null if no suitable one is found
      */
-    private static Class<? extends Activity> guessRestartActivityClass(Context context) {
+    @Nullable
+    private static Class<? extends Activity> guessRestartActivityClass(@NonNull Context context) {
         Class<? extends Activity> resolvedActivityClass;
 
         //If action is defined, use that
@@ -672,7 +553,8 @@ public final class CustomActivityOnCrash {
      * @return A valid activity class, or null if no suitable one is found
      */
     @SuppressWarnings("unchecked")
-    private static Class<? extends Activity> getRestartActivityClassWithIntentFilter(Context context) {
+    @Nullable
+    private static Class<? extends Activity> getRestartActivityClassWithIntentFilter(@NonNull Context context) {
         Intent searchedIntent = new Intent().setAction(INTENT_ACTION_RESTART_ACTIVITY).setPackage(context.getPackageName());
         List<ResolveInfo> resolveInfos = context.getPackageManager().queryIntentActivities(searchedIntent,
                 PackageManager.GET_RESOLVED_FILTER);
@@ -698,9 +580,10 @@ public final class CustomActivityOnCrash {
      * @return A valid activity class, or null if no suitable one is found
      */
     @SuppressWarnings("unchecked")
-    private static Class<? extends Activity> getLauncherActivity(Context context) {
+    @Nullable
+    private static Class<? extends Activity> getLauncherActivity(@NonNull Context context) {
         Intent intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
-        if (intent != null) {
+        if (intent != null && intent.getComponent() != null) {
             try {
                 return (Class<? extends Activity>) Class.forName(intent.getComponent().getClassName());
             } catch (ClassNotFoundException e) {
@@ -720,13 +603,14 @@ public final class CustomActivityOnCrash {
      * @param context A valid context. Must not be null.
      * @return The guessed error activity class, or the default error activity if not found
      */
-    private static Class<? extends Activity> guessErrorActivityClass(Context context) {
+    @NonNull
+    private static Class<? extends Activity> guessErrorActivityClass(@NonNull Context context) {
         Class<? extends Activity> resolvedActivityClass;
 
         //If action is defined, use that
         resolvedActivityClass = getErrorActivityClassWithIntentFilter(context);
 
-        //Else, get the default launcher activity
+        //Else, get the default error activity
         if (resolvedActivityClass == null) {
             resolvedActivityClass = DefaultErrorActivity.class;
         }
@@ -742,7 +626,8 @@ public final class CustomActivityOnCrash {
      * @return A valid activity class, or null if no suitable one is found
      */
     @SuppressWarnings("unchecked")
-    private static Class<? extends Activity> getErrorActivityClassWithIntentFilter(Context context) {
+    @Nullable
+    private static Class<? extends Activity> getErrorActivityClassWithIntentFilter(@NonNull Context context) {
         Intent searchedIntent = new Intent().setAction(INTENT_ACTION_ERROR_ACTIVITY).setPackage(context.getPackageName());
         List<ResolveInfo> resolveInfos = context.getPackageManager().queryIntentActivities(searchedIntent,
                 PackageManager.GET_RESOLVED_FILTER);
@@ -774,7 +659,8 @@ public final class CustomActivityOnCrash {
      *
      * @param timestamp The current timestamp.
      */
-    private static void setLastCrashTimestamp(Context context, long timestamp) {
+    @SuppressLint("ApplySharedPref") //This must be done immediately since we are killing the app
+    private static void setLastCrashTimestamp(@NonNull Context context, long timestamp) {
         context.getSharedPreferences(SHARED_PREFERENCES_FILE, Context.MODE_PRIVATE).edit().putLong(SHARED_PREFERENCES_FIELD_TIMESTAMP, timestamp).commit();
     }
 
@@ -783,7 +669,7 @@ public final class CustomActivityOnCrash {
      *
      * @return The last crash timestamp, or -1 if not set.
      */
-    private static long getLastCrashTimestamp(Context context) {
+    private static long getLastCrashTimestamp(@NonNull Context context) {
         return context.getSharedPreferences(SHARED_PREFERENCES_FILE, Context.MODE_PRIVATE).getLong(SHARED_PREFERENCES_FIELD_TIMESTAMP, -1);
     }
 
@@ -793,11 +679,11 @@ public final class CustomActivityOnCrash {
      *
      * @return true if the app has crashed in the last seconds, false otherwise.
      */
-    private static boolean hasCrashedInTheLastSeconds(Context context) {
+    private static boolean hasCrashedInTheLastSeconds(@NonNull Context context) {
         long lastTimestamp = getLastCrashTimestamp(context);
         long currentTimestamp = new Date().getTime();
 
-        return (lastTimestamp <= currentTimestamp && currentTimestamp - lastTimestamp < TIMESTAMP_DIFFERENCE_TO_AVOID_RESTART_LOOPS_IN_MILLIS);
+        return (lastTimestamp <= currentTimestamp && currentTimestamp - lastTimestamp < config.getMinTimeBetweenCrashesMs());
     }
 
     /**

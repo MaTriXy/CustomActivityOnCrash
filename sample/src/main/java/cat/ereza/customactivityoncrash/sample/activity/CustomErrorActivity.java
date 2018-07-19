@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Eduard Ereza Martínez
+ * Copyright 2014-2017 Eduard Ereza Martínez
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,22 +14,23 @@
  * limitations under the License.
  */
 
-package cat.ereza.sample.customactivityoncrash.activity;
+package cat.ereza.customactivityoncrash.sample.activity;
 
-import android.app.Activity;
-import android.content.Intent;
 import android.os.Bundle;
+import android.support.annotation.Nullable;
+import android.support.v7.app.AppCompatActivity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
 import cat.ereza.customactivityoncrash.CustomActivityOnCrash;
-import cat.ereza.sample.customactivityoncrash.R;
+import cat.ereza.customactivityoncrash.config.CaocConfig;
+import cat.ereza.customactivityoncrash.sample.R;
 
-public class CustomErrorActivity extends Activity {
+public class CustomErrorActivity extends AppCompatActivity {
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         setContentView(R.layout.activity_custom_error);
@@ -42,37 +43,41 @@ public class CustomErrorActivity extends Activity {
 
         //These four methods are available for you to use:
         //CustomActivityOnCrash.getStackTraceFromIntent(getIntent()): gets the stack trace as a string
+        //CustomActivityOnCrash.getActivityLogFromIntent(getIntent()): gets the activity log as a string
         //CustomActivityOnCrash.getAllErrorDetailsFromIntent(context, getIntent()): returns all error details including stacktrace as a string
-        //CustomActivityOnCrash.getRestartActivityClassFromIntent(getIntent()): returns the class of the restart activity to launch, or null if none
-        //CustomActivityOnCrash.getEventListenerFromIntent(getIntent()): returns the event listener that must be passed to restartApplicationWithIntent or closeApplication
+        //CustomActivityOnCrash.getConfigFromIntent(getIntent()): returns the config of the library when the error happened
 
         //Now, treat here the error as you wish. If you allow the user to restart or close the app,
         //don't forget to call the appropriate methods.
         //Otherwise, if you don't finish the activity, you will get the CustomErrorActivity on the activity stack and it will be visible again under some circumstances.
         //Also, you will get multiprocess problems in API<17.
 
-        TextView errorDetailsText = (TextView) findViewById(R.id.error_details);
+        TextView errorDetailsText = findViewById(R.id.error_details);
         errorDetailsText.setText(CustomActivityOnCrash.getStackTraceFromIntent(getIntent()));
 
-        Button restartButton = (Button) findViewById(R.id.restart_button);
+        Button restartButton = findViewById(R.id.restart_button);
 
-        final Class<? extends Activity> restartActivityClass = CustomActivityOnCrash.getRestartActivityClassFromIntent(getIntent());
-        final CustomActivityOnCrash.EventListener eventListener = CustomActivityOnCrash.getEventListenerFromIntent(getIntent());
+        final CaocConfig config = CustomActivityOnCrash.getConfigFromIntent(getIntent());
 
-        if (restartActivityClass != null) {
+        if (config == null) {
+            //This should never happen - Just finish the activity to avoid a recursive crash.
+            finish();
+            return;
+        }
+
+        if (config.isShowRestartButton() && config.getRestartActivityClass() != null) {
             restartButton.setText(R.string.restart_app);
             restartButton.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    Intent intent = new Intent(CustomErrorActivity.this, restartActivityClass);
-                    CustomActivityOnCrash.restartApplicationWithIntent(CustomErrorActivity.this, intent, eventListener);
+                    CustomActivityOnCrash.restartApplication(CustomErrorActivity.this, config);
                 }
             });
         } else {
             restartButton.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    CustomActivityOnCrash.closeApplication(CustomErrorActivity.this, eventListener);
+                    CustomActivityOnCrash.closeApplication(CustomErrorActivity.this, config);
                 }
             });
         }

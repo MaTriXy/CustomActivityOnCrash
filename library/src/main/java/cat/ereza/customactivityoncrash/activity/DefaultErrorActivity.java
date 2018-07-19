@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Eduard Ereza Martínez
+ * Copyright 2014-2017 Eduard Ereza Martínez
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,16 @@
 
 package cat.ereza.customactivityoncrash.activity;
 
-import android.app.Activity;
-import android.app.AlertDialog;
+import android.annotation.SuppressLint;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.DialogInterface;
-import android.content.Intent;
-import android.os.Build;
+import android.content.res.TypedArray;
 import android.os.Bundle;
+import android.support.annotation.Nullable;
+import android.support.v4.content.res.ResourcesCompat;
+import android.support.v7.app.AlertDialog;
+import android.support.v7.app.AppCompatActivity;
 import android.util.TypedValue;
 import android.view.View;
 import android.widget.Button;
@@ -33,12 +35,22 @@ import android.widget.Toast;
 
 import cat.ereza.customactivityoncrash.CustomActivityOnCrash;
 import cat.ereza.customactivityoncrash.R;
+import cat.ereza.customactivityoncrash.config.CaocConfig;
 
-public final class DefaultErrorActivity extends Activity {
+public final class DefaultErrorActivity extends AppCompatActivity {
 
+    @SuppressLint("PrivateResource")
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        //This is needed to avoid a crash if the developer has not specified
+        //an app-level theme that extends Theme.AppCompat
+        TypedArray a = obtainStyledAttributes(R.styleable.AppCompatTheme);
+        if (!a.hasValue(R.styleable.AppCompatTheme_windowActionBar)) {
+            setTheme(R.style.Theme_AppCompat_Light_DarkActionBar);
+        }
+        a.recycle();
 
         setContentView(R.layout.customactivityoncrash_default_error_activity);
 
@@ -46,33 +58,36 @@ public final class DefaultErrorActivity extends Activity {
         //If a class if set, use restart.
         //Else, use close and just finish the app.
         //It is recommended that you follow this logic if implementing a custom error activity.
-        Button restartButton = (Button) findViewById(R.id.customactivityoncrash_error_activity_restart_button);
+        Button restartButton = findViewById(R.id.customactivityoncrash_error_activity_restart_button);
 
-        final Class<? extends Activity> restartActivityClass = CustomActivityOnCrash.getRestartActivityClassFromIntent(getIntent());
-        final CustomActivityOnCrash.EventListener eventListener = CustomActivityOnCrash.getEventListenerFromIntent(getIntent());
+        final CaocConfig config = CustomActivityOnCrash.getConfigFromIntent(getIntent());
 
-        if (restartActivityClass != null) {
+        if (config == null) {
+            //This should never happen - Just finish the activity to avoid a recursive crash.
+            finish();
+            return;
+        }
+
+        if (config.isShowRestartButton() && config.getRestartActivityClass() != null) {
             restartButton.setText(R.string.customactivityoncrash_error_activity_restart_app);
             restartButton.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    Intent intent = new Intent(DefaultErrorActivity.this, restartActivityClass);
-                    CustomActivityOnCrash.restartApplicationWithIntent(DefaultErrorActivity.this, intent, eventListener);
+                    CustomActivityOnCrash.restartApplication(DefaultErrorActivity.this, config);
                 }
             });
         } else {
             restartButton.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    CustomActivityOnCrash.closeApplication(DefaultErrorActivity.this, eventListener);
+                    CustomActivityOnCrash.closeApplication(DefaultErrorActivity.this, config);
                 }
             });
         }
 
-        Button moreInfoButton = (Button) findViewById(R.id.customactivityoncrash_error_activity_more_info_button);
+        Button moreInfoButton = findViewById(R.id.customactivityoncrash_error_activity_more_info_button);
 
-        if (CustomActivityOnCrash.isShowErrorDetailsFromIntent(getIntent())) {
-
+        if (config.isShowErrorDetails()) {
             moreInfoButton.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -87,40 +102,37 @@ public final class DefaultErrorActivity extends Activity {
                                         @Override
                                         public void onClick(DialogInterface dialog, int which) {
                                             copyErrorToClipboard();
-                                            Toast.makeText(DefaultErrorActivity.this, R.string.customactivityoncrash_error_activity_error_details_copied, Toast.LENGTH_SHORT).show();
                                         }
                                     })
                             .show();
-                    TextView textView = (TextView) dialog.findViewById(android.R.id.message);
-                    textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.customactivityoncrash_error_activity_error_details_text_size));
+                    TextView textView = dialog.findViewById(android.R.id.message);
+                    if (textView != null) {
+                        textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.customactivityoncrash_error_activity_error_details_text_size));
+                    }
                 }
             });
         } else {
             moreInfoButton.setVisibility(View.GONE);
         }
 
-        int defaultErrorActivityDrawableId = CustomActivityOnCrash.getDefaultErrorActivityDrawableIdFromIntent(getIntent());
-        ImageView errorImageView = ((ImageView) findViewById(R.id.customactivityoncrash_error_activity_image));
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            errorImageView.setImageDrawable(getResources().getDrawable(defaultErrorActivityDrawableId, getTheme()));
-        } else {
-            //noinspection deprecation
-            errorImageView.setImageDrawable(getResources().getDrawable(defaultErrorActivityDrawableId));
+        Integer defaultErrorActivityDrawableId = config.getErrorDrawable();
+        ImageView errorImageView = findViewById(R.id.customactivityoncrash_error_activity_image);
+
+        if (defaultErrorActivityDrawableId != null) {
+            errorImageView.setImageDrawable(ResourcesCompat.getDrawable(getResources(), defaultErrorActivityDrawableId, getTheme()));
         }
     }
 
     private void copyErrorToClipboard() {
-        String errorInformation =
-                CustomActivityOnCrash.getAllErrorDetailsFromIntent(DefaultErrorActivity.this, getIntent());
+        String errorInformation = CustomActivityOnCrash.getAllErrorDetailsFromIntent(DefaultErrorActivity.this, getIntent());
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
-            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+
+        //Are there any devices without clipboard...?
+        if (clipboard != null) {
             ClipData clip = ClipData.newPlainText(getString(R.string.customactivityoncrash_error_activity_error_details_clipboard_label), errorInformation);
             clipboard.setPrimaryClip(clip);
-        } else {
-            //noinspection deprecation
-            android.text.ClipboardManager clipboard = (android.text.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            clipboard.setText(errorInformation);
+            Toast.makeText(DefaultErrorActivity.this, R.string.customactivityoncrash_error_activity_error_details_copied, Toast.LENGTH_SHORT).show();
         }
     }
 }
