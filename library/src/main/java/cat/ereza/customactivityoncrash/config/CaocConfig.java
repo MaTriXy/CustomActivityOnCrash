@@ -17,10 +17,10 @@
 package cat.ereza.customactivityoncrash.config;
 
 import android.app.Activity;
-import android.support.annotation.DrawableRes;
-import android.support.annotation.IntDef;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import androidx.annotation.DrawableRes;
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import java.io.Serializable;
 import java.lang.annotation.Retention;
@@ -51,6 +51,7 @@ public class CaocConfig implements Serializable {
     private Integer errorDrawable = null;
     private Class<? extends Activity> errorActivityClass = null;
     private Class<? extends Activity> restartActivityClass = null;
+    private CustomActivityOnCrash.CustomCrashDataCollector customCrashDataCollector = null;
     private CustomActivityOnCrash.EventListener eventListener = null;
 
     @BackgroundMode
@@ -130,6 +131,15 @@ public class CaocConfig implements Serializable {
     }
 
     @Nullable
+    public CustomActivityOnCrash.CustomCrashDataCollector getCustomCrashDataCollector() {
+        return customCrashDataCollector;
+    }
+
+    public void setCustomCrashDataCollector(@Nullable CustomActivityOnCrash.CustomCrashDataCollector collector) {
+        this.customCrashDataCollector = collector;
+    }
+
+    @Nullable
     public Class<? extends Activity> getRestartActivityClass() {
         return restartActivityClass;
     }
@@ -165,6 +175,7 @@ public class CaocConfig implements Serializable {
             config.minTimeBetweenCrashesMs = currentConfig.minTimeBetweenCrashesMs;
             config.errorDrawable = currentConfig.errorDrawable;
             config.errorActivityClass = currentConfig.errorActivityClass;
+            config.customCrashDataCollector = currentConfig.customCrashDataCollector;
             config.restartActivityClass = currentConfig.restartActivityClass;
             config.eventListener = currentConfig.eventListener;
 
@@ -309,6 +320,23 @@ public class CaocConfig implements Serializable {
                 throw new IllegalArgumentException("The event listener cannot be an inner or anonymous class, because it will need to be serialized. Change it to a class of its own, or make it a static inner class.");
             } else {
                 config.eventListener = eventListener;
+            }
+            return this;
+        }
+
+        /**
+         * Sets the custom data collector class to invoke when a crash occurs.
+         * If not set or set to null, no custom data will be collected.
+         *
+         * @param collector The custom data collector.
+         * @throws IllegalArgumentException if the collector is an inner or anonymous class
+         */
+        @NonNull
+        public Builder customCrashDataCollector(@Nullable CustomActivityOnCrash.CustomCrashDataCollector collector) {
+            if (collector != null && collector.getClass().getEnclosingClass() != null && !Modifier.isStatic(collector.getClass().getModifiers())) {
+                throw new IllegalArgumentException("The custom data collector cannot be an inner or anonymous class, because it will need to be serialized. Change it to a class of its own, or make it a static inner class.");
+            } else {
+                config.customCrashDataCollector = collector;
             }
             return this;
         }

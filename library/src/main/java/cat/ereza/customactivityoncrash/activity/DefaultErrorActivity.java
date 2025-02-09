@@ -19,19 +19,19 @@ package cat.ereza.customactivityoncrash.activity;
 import android.annotation.SuppressLint;
 import android.content.ClipData;
 import android.content.ClipboardManager;
-import android.content.DialogInterface;
 import android.content.res.TypedArray;
 import android.os.Bundle;
-import android.support.annotation.Nullable;
-import android.support.v4.content.res.ResourcesCompat;
-import android.support.v7.app.AlertDialog;
-import android.support.v7.app.AppCompatActivity;
 import android.util.TypedValue;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.res.ResourcesCompat;
 
 import cat.ereza.customactivityoncrash.CustomActivityOnCrash;
 import cat.ereza.customactivityoncrash.R;
@@ -70,45 +70,26 @@ public final class DefaultErrorActivity extends AppCompatActivity {
 
         if (config.isShowRestartButton() && config.getRestartActivityClass() != null) {
             restartButton.setText(R.string.customactivityoncrash_error_activity_restart_app);
-            restartButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    CustomActivityOnCrash.restartApplication(DefaultErrorActivity.this, config);
-                }
-            });
+            restartButton.setOnClickListener(v -> CustomActivityOnCrash.restartApplication(DefaultErrorActivity.this, config));
         } else {
-            restartButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    CustomActivityOnCrash.closeApplication(DefaultErrorActivity.this, config);
-                }
-            });
+            restartButton.setOnClickListener(v -> CustomActivityOnCrash.closeApplication(DefaultErrorActivity.this, config));
         }
 
         Button moreInfoButton = findViewById(R.id.customactivityoncrash_error_activity_more_info_button);
 
         if (config.isShowErrorDetails()) {
-            moreInfoButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    //We retrieve all the error data and show it
-
-                    AlertDialog dialog = new AlertDialog.Builder(DefaultErrorActivity.this)
-                            .setTitle(R.string.customactivityoncrash_error_activity_error_details_title)
-                            .setMessage(CustomActivityOnCrash.getAllErrorDetailsFromIntent(DefaultErrorActivity.this, getIntent()))
-                            .setPositiveButton(R.string.customactivityoncrash_error_activity_error_details_close, null)
-                            .setNeutralButton(R.string.customactivityoncrash_error_activity_error_details_copy,
-                                    new DialogInterface.OnClickListener() {
-                                        @Override
-                                        public void onClick(DialogInterface dialog, int which) {
-                                            copyErrorToClipboard();
-                                        }
-                                    })
-                            .show();
-                    TextView textView = dialog.findViewById(android.R.id.message);
-                    if (textView != null) {
-                        textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.customactivityoncrash_error_activity_error_details_text_size));
-                    }
+            moreInfoButton.setOnClickListener(v -> {
+                //We retrieve all the error data and show it
+                AlertDialog dialog = new AlertDialog.Builder(DefaultErrorActivity.this)
+                        .setTitle(R.string.customactivityoncrash_error_activity_error_details_title)
+                        .setMessage(CustomActivityOnCrash.getAllErrorDetailsFromIntent(DefaultErrorActivity.this, getIntent()))
+                        .setPositiveButton(R.string.customactivityoncrash_error_activity_error_details_close, null)
+                        .setNeutralButton(R.string.customactivityoncrash_error_activity_error_details_copy,
+                                (dialog1, which) -> copyErrorToClipboard())
+                        .show();
+                TextView textView = dialog.findViewById(android.R.id.message);
+                if (textView != null) {
+                    textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.customactivityoncrash_error_activity_error_details_text_size));
                 }
             });
         } else {

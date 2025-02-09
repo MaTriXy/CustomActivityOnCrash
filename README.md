@@ -11,13 +11,17 @@ This library allows launching a custom activity when the app crashes, instead of
 Add the following dependency to your build.gradle:
 ```gradle
 dependencies {
-    compile 'cat.ereza:customactivityoncrash:2.2.0'
+    implementation 'cat.ereza:customactivityoncrash:2.4.0'
 }
 ```
 
 ...and you are done!
 
-Of course, you can combine this library with any other crash handler such as Crashlytics, ACRA or Firebase, just set them up as you would normally.
+**You can combine this library with other crash handlers such as Firebase Crashlytics or ACRA.**
+
+If you are using Firebase Crashlytics, you **must** call `FirebaseApp.initializeApp(this);` inside `onCreate` in your `Application` class.
+
+If you are using ACRA, you **must** initialize it inside `onCreate` in your `Application` class, instead of `attachBaseContext`, and enable `alsoReportToAndroidFramework`, otherwise, CustomActivityOnCrash will not work.
 
 ### Try it
 
@@ -49,7 +53,10 @@ public void onCreate() {
         .restartActivity(YourCustomActivity.class) //default: null (your app's launch activity)
         .errorActivity(YourCustomErrorActivity.class) //default: null (default error activity)
         .eventListener(new YourCustomEventListener()) //default: null
+        .customCrashDataCollector(new YourCustomCrashDataCollector()) //default: null
         .apply();
+
+    //If you use Firebase Crashlytics or ACRA, please initialize them here as explained above.
 }
 ```
 
@@ -175,6 +182,15 @@ eventListener(EventListener);
 > If you set it to `null`, no event listener will be invoked.
 > The default is `null`.
 
+```java
+customCrashDataCollector(CustomCrashDataCollector);
+```
+> This method allows you to specify a custom crash data collector that will be invoked when a crash occurs.
+> This additional data will be added to the "error details" view on the default error activity, or you can use it in your custom error activity.
+> The CustomCrashDataCollector you provide can not be an anonymous or non-static inner class, because it needs to be serialized by the library. The library will throw an exception if you try to set an invalid class.
+> If you set it to `null`, no custom crash data will be collected.
+> The default is `null`.
+
 ### Customization of the default activity
 
 You can override several resources to customize the default activity:
@@ -218,14 +234,24 @@ You can provide new strings and translations for the default error activity stri
 If you choose to create your own completely custom error activity, you can use these methods:
 
 ```java
+CustomActivityOnCrash.getAllErrorDetailsFromIntent(getIntent());
+```
+> Returns several error details including the stack trace that caused the error, the activity log (if available) and the custom crash data (if available), as a string. This is used in the default error activity error details dialog.
+
+```java
 CustomActivityOnCrash.getStackTraceFromIntent(getIntent());
 ```
 > Returns the stack trace that caused the error as a string.
 
 ```java
-CustomActivityOnCrash.getAllErrorDetailsFromIntent(getIntent());
+CustomActivityOnCrash.getActivityLogFromIntent(getIntent());
 ```
-> Returns several error details including the stack trace that caused the error, as a string. This is used in the default error activity error details dialog.
+> Returns the activity log as a string if `trackActivities` was enabled, `null` otherwise.
+
+```java
+CustomActivityOnCrash.getCustomCrashDataFromIntent(getIntent());
+```
+> Returns the custom crash data collected with your `CustomCrashDataCollector` if `customCrashDataCollector` was enabled, `null` otherwise.
 
 ```java
 CustomActivityOnCrash.getConfigFromIntent(getIntent());
@@ -268,9 +294,7 @@ The inner workings are based on [ACRA](https://github.com/ACRA/acra)'s dialog re
 
 ## Incompatibilities
 
-* CustomActivityOnCrash will not work in these cases:
-    * With any custom `UncaughtExceptionHandler` set after initializing the library, that does not call back to the original handler.
-    * With ACRA enabled and reporting mode set to `TOAST` or `DIALOG`.
+* CustomActivityOnCrash will not work with any custom `UncaughtExceptionHandler` set after initializing the library that does not call back to the original handler.
 * If your app initialization or error activity crash, there is a possibility of entering an infinite restart loop (this is checked by the library for the most common cases, but could happen in rarer cases).
 * The library has not been tested with multidex enabled. It uses Class.forName() to load classes, so maybe that could cause some problem in API<21. If you test it with such configuration, please provide feedback!
 * The library has not been tested with multiprocess apps. If you test it with such configuration, please provide feedback too!
